@@ -152,7 +152,7 @@
       (update-in vmap' [lib :versions] conj coord-id)
 
       :skip-parent-missing
-      nil
+      (update-in vmap' [lib :versions] conj coord-id)
 
       :choice
       (let [select-id (get-in vmap' [lib :select])]
@@ -223,7 +223,9 @@
           lib
           (cond-> (assoc coord :paths src-paths)
             (seq paths) (assoc :dependents paths)))))
-    {} version-map))
+    ;;Do not consider things that have not been selected
+    {} (->> version-map
+            (filter (comp :select second)))))
 
 (defn resolve-deps
   "Takes a deps configuration map and resolves the transitive dependency graph

@@ -169,7 +169,8 @@
                 (assoc-in vmap' [lib :select] coord-id))
 
               :else
-              (with-log verbose (str "current is newer" select-id)))))))))
+              (with-log verbose (str "current is newer" select-id)
+                (update-in vmap' [lib :versions] conj coord-id)))))))))
 
 ;; expand-deps
 

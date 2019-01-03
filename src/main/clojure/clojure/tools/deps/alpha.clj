@@ -109,20 +109,19 @@
     ;; lib is a top dep and this is it => select and pin
     (empty? path) :pin
 
+    (get-in vmap [lib :pin])
+    (do (when verbose (println "\t=> skip, top dep used instead"))
+        :skip-alternate-pinned)
+
     ;; lib is excluded in this path => omit
     (excluded? exclusions path lib)
     (do (when verbose (println "\t=> excluded"))
         nil)
 
-    ;; lib is a top dep and this isn't it => omit
-    (get-in vmap [lib :pin])
-    (do (when verbose (println "\t=> skip, top dep used instead"))
-        nil)
-
     ;; lib's parent path is not included => omit
     (parent-missing? vmap lib path)
     (do (when verbose (println "\t=> skip, path to dep no longer included" path))
-        nil)
+        :skip-parent-missing)
 
     ;; otherwise => choose newest version
     :else :choice))
@@ -144,9 +143,18 @@
                 (update-in [lib :paths]
                   (fn [coord-paths]
                     (merge-with into {coord-id #{path}} coord-paths))))]
-    (if (= action :pin)
+    (case action
+      :pin
       (with-log verbose "include, pin top dep"
         (update-in vmap' [lib] merge {:select coord-id :pin true}))
+
+      :skip-alternate-pinned
+      (update-in vmap' [lib :versions] conj coord-id)
+
+      :skip-parent-missing
+      (update-in vmap' [lib :versions] conj coord-id)
+
+      :choice
       (let [select-id (get-in vmap' [lib :select])]
         (if (not select-id)
           (with-log verbose "include, new dep"
@@ -161,13 +169,15 @@
                 (assoc-in vmap' [lib :select] coord-id))
 
               :else
-              (with-log verbose (str "current is newer" select-id)))))))))
+              (with-log verbose (str "current is newer" select-id)
+                (update-in vmap' [lib :versions] conj coord-id)))))))))
 
 ;; expand-deps
 
 (defn- expand-deps
   [deps default-deps override-deps config verbose]
   (loop [q (into (PersistentQueue/EMPTY) (map vector deps))
+         seen #{}
          version-map nil
          exclusions nil] ;; path to set of exclusions at path
     (if-let [path (peek q)] ;; path from root dep to dep being expanded
@@ -186,16 +196,19 @@
                 use-coord (merge use-coord manifest-info)
                 children (canonicalize-deps (ext/coord-deps lib use-coord manifest-type config) config)
                 child-paths (map #(conj use-path %) children)
-                vmap' (add-coord version-map lib coord-id use-coord parents action config verbose)]
-            (if vmap'
+                vmap' (or (add-coord version-map lib coord-id use-coord parents action config verbose)
+                          version-map)
+                seen' (into seen (map peek child-paths))]
+            (do
               (recur
-                (into q' child-paths)
-                vmap'
-                (if-let [excl (:exclusions use-coord)]
-                  (add-exclusion exclusions use-path excl)
-                  exclusions))
-              (recur q' version-map exclusions)))
-          (recur q' version-map exclusions)))
+               (into q' (->> child-paths
+                             (remove (comp seen peek))))
+               seen'
+               vmap'
+               (if-let [excl (:exclusions use-coord)]
+                 (add-exclusion exclusions use-path excl)
+                exclusions))))
+          (recur q' seen version-map exclusions)))
       (do
         (when verbose (println) (println "Version map:") (pprint version-map))
         version-map))))
@@ -211,7 +224,9 @@
           lib
           (cond-> (assoc coord :paths src-paths)
             (seq paths) (assoc :dependents paths)))))
-    {} version-map))
+    ;;Do not consider things that have not been selected
+    {} (->> version-map
+            (filter (comp :select second)))))
 
 (defn resolve-deps
   "Takes a deps configuration map and resolves the transitive dependency graph
